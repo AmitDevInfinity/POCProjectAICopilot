@@ -1,5 +1,6 @@
 using Engineering_IntelligenceTools.Models.Analysis;
 using Engineering_IntelligenceTools.Services.Interfaces;
+using Engineering_IntelligenceTools.Utilities;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Engineering_IntelligenceTools.Controllers;
@@ -16,7 +17,7 @@ public class AnalysisController : ControllerBase
     public AnalysisController(
         IGitHubClientService gitHubClientService,
         IAnalyzerOrchestrator orchestrator,
-        IAnalysisResultStore resultStore,
+          IAnalysisResultStore resultStore,
         ILogger<AnalysisController> logger)
     {
         _gitHubClientService = gitHubClientService;
@@ -24,55 +25,73 @@ public class AnalysisController : ControllerBase
         _resultStore = resultStore;
         _logger = logger;
     }
+
+
     [HttpPost("run")]
     [ProducesResponseType(typeof(AnalysisResult), StatusCodes.Status200OK)]
     public async Task<IActionResult> Run([FromBody] AnalysisRequest request, CancellationToken cancellationToken)
     {
-        if (request.PullRequestNumber is null && (request.BaseSha is null || request.HeadSha is null))
+        string owner;
+        string repo;
+        int prNumber;
+
+        if (GitHubUrlParser.TryParse(request.Url, out var prOwner, out var prRepo, out var parsedPrNumber))
+        {
+            // A specific PR URL was given - analyze exactly that PR.
+            owner = prOwner;
+            repo = prRepo;
+            prNumber = parsedPrNumber;
+        }
+        else if (GitHubRepositoryUrlParser.TryParse(request.Url, out var repoOwner, out var repoName))
+        {
+            // A plain repo URL was given - auto-pick the latest open PR.
+            owner = repoOwner;
+            repo = repoName;
+
+            int? latestPrNumber;
+            try
+            {
+                latestPrNumber = await _gitHubClientService.GetLatestOpenPullRequestNumberAsync(owner, repo, cancellationToken);
+            }
+            catch (Octokit.NotFoundException)
+            {
+                return NotFound(new { error = $"Repository not found: {owner}/{repo}" });
+            }
+
+            if (latestPrNumber is null)
+            {
+                return NotFound(new
+                {
+                    error = $"No open pull requests found on {owner}/{repo}. Open a PR first, then try again."
+                });
+            }
+
+            prNumber = latestPrNumber.Value;
+        }
+        else
         {
             return BadRequest(new
             {
-                error = "Provide either pullRequestNumber, or both baseSha and headSha."
+                error = "url is not a recognized GitHub URL. Expected either " +
+                        "https://github.com/{owner}/{repo}/pull/{number} or " +
+                        "https://github.com/{owner}/{repo}(.git)"
             });
         }
 
         try
         {
-            AnalysisContext context;
+            var files = await _gitHubClientService.GetPullRequestFilesAsync(owner, repo, prNumber, cancellationToken);
+            var (baseSha, headSha) = await _gitHubClientService.GetPullRequestShaRangeAsync(owner, repo, prNumber, cancellationToken);
 
-            if (request.PullRequestNumber is { } prNumber)
+            var context = new AnalysisContext
             {
-                var files = await _gitHubClientService.GetPullRequestFilesAsync(
-                    request.Owner, request.Repo, prNumber, cancellationToken);
-
-                var (baseSha, headSha) = await _gitHubClientService.GetPullRequestShaRangeAsync(
-                    request.Owner, request.Repo, prNumber, cancellationToken);
-
-                context = new AnalysisContext
-                {
-                    Owner = request.Owner,
-                    Repo = request.Repo,
-                    PullRequestNumber = prNumber,
-                    BaseSha = baseSha,
-                    HeadSha = headSha,
-                    Files = files
-                };
-            }
-            else
-            {
-                var files = await _gitHubClientService.CompareCommitsAsync(
-                    request.Owner, request.Repo, request.BaseSha!, request.HeadSha!, cancellationToken);
-
-                context = new AnalysisContext
-                {
-                    Owner = request.Owner,
-                    Repo = request.Repo,
-                    PullRequestNumber = null,
-                    BaseSha = request.BaseSha!,
-                    HeadSha = request.HeadSha!,
-                    Files = files
-                };
-            }
+                Owner = owner,
+                Repo = repo,
+                PullRequestNumber = prNumber,
+                BaseSha = baseSha,
+                HeadSha = headSha,
+                Files = files
+            };
 
             var result = await _orchestrator.AnalyzeAsync(context, cancellationToken);
             _resultStore.Save(result);
@@ -81,7 +100,7 @@ public class AnalysisController : ControllerBase
         }
         catch (Octokit.NotFoundException)
         {
-            return NotFound(new { error = $"Repository or PR not found: {request.Owner}/{request.Repo}" });
+            return NotFound(new { error = $"Repository or PR not found: {owner}/{repo} #{prNumber}" });
         }
         catch (Octokit.ForbiddenException)
         {
