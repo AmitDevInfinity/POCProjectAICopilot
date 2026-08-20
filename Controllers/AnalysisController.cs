@@ -20,13 +20,12 @@ public class AnalysisController : ControllerBase
         IAnalysisResultStore resultStore,
         ILogger<AnalysisController> logger)
     {
-        _gitHubClientService = gitHubClientService;
+         _gitHubClientService = gitHubClientService;
         _orchestrator = orchestrator;
         _resultStore = resultStore;
         _logger = logger;
     }
 
-    //Amit changes
     [HttpPost("run")]
     [ProducesResponseType(typeof(AnalysisResult), StatusCodes.Status200OK)]
     public async Task<IActionResult> Run([FromBody] AnalysisRequest request, CancellationToken cancellationToken)
