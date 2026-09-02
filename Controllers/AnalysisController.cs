@@ -15,7 +15,7 @@ public class AnalysisController : ControllerBase
     private readonly ILogger<AnalysisController> _logger;
 
     public AnalysisController(
-          IGitHubClientService gitHubClientService,
+        IGitHubClientService gitHubClientService,
         IAnalyzerOrchestrator orchestrator,
         IAnalysisResultStore resultStore,
         ILogger<AnalysisController> logger)
@@ -36,7 +36,6 @@ public class AnalysisController : ControllerBase
 
         if (GitHubUrlParser.TryParse(request.Url, out var prOwner, out var prRepo, out var parsedPrNumber))
         {
-            // A specific PR URL was given - analyze exactly that PR.
             owner = prOwner;
             repo = prRepo;
             prNumber = parsedPrNumber;
